@@ -1,259 +1,225 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Shared;
 
 namespace Backend;
 
 public class OrderRepository : IOrderRepository
 {
-	private readonly ApplicationDbContext _context;
-	private readonly IProductRepository _productRepository;
+  private readonly ApplicationDbContext _context;
+  private readonly IProductRepository _productRepository;
+  public OrderRepository(ApplicationDbContext context, IProductRepository productRepository)
+  {
+    _context = context;
+    _productRepository = productRepository;
+  }
+  /// <summary>
+  /// Crea una orden de compra y registra la transacción en la base de datos.
+  /// </summary>
+  /// <param name="order">La orden de compra a crear.</param>
+  /// <returns>La orden creada con los nombres de los comprador y vendedor.</returns>
+  /// <exception cref="KeyNotFoundException">Si no se encontró el comprador.</exception>
+  /// <exception cref="InvalidOperationException">Si el saldo del comprador es insuficiente o no se pudo realizar la venta.</exception>
+  public async Task<OrderResponseDto> CreateOrderAsync(OrderCreateDto order)
+  {
+    var buyer = await _context.Users.FirstOrDefaultAsync(u => u.Id == order.BuyerId);
+    if (buyer == null || buyer.Active == false)
+    {
+      throw new KeyNotFoundException("No se encontró o no existe el comprador.");
+    }
+    //validacion que el balance solo puede restarse hasta llegar a -10
+    decimal finalBalance = buyer.Balance - order.Total;
+    if (finalBalance < -10)
+    {
+      throw new InvalidOperationException("Saldo insuficiente.");
+    }
+    bool sellOk = await _productRepository.RegisterSellProductAsync(order, order.BuyerId);
+    if (!sellOk)
+    {
+      throw new InvalidOperationException("No se pudo realizar la venta.");
+    }
+    var orderEntity = new OrderEntity
+    {
+      BuyerId = order.BuyerId,
+      SellerId = order.SellerId,
+      Total = order.Total,
+      OrderDetails = order.OrderDetails.Select(od => new OrderDetailEntity
+      {
+        ProductId = od.ProductId,
+        Quantity = od.Quantity,
+        UnitPrice = od.UnitPrice,
+        Subtotal = od.Subtotal
+      }).ToList()
+    };
+    await _context.Orders.AddAsync(orderEntity);
+    var transaction = new BalanceTransactionsEntity
+    {
+      UserId = order.BuyerId,
+      Type = "DÉBITO",
+      Amount = order.Total,
+      Description = "Compra de productos",
+      BalanceBefore = buyer.Balance,
+      BalanceAfter = finalBalance
+    };
+    await _context.BalanceTransactions.AddAsync(transaction);
+    buyer.Balance = finalBalance;
+    await _context.SaveChangesAsync();
+    // Obtener nombres para el DTO de respuesta (puede optimizarse si ya están en el contexto)
+    var seller = await _context.Users.FirstOrDefaultAsync(u => u.Id == order.SellerId);
+    return new OrderResponseDto
+    {
+      Id = orderEntity.Id,
+      BuyerId = order.BuyerId,
+      BuyerFullName = $"{buyer.FirstName} {buyer.LastName}",
+      SellerId = order.SellerId,
+      SellerFullName = seller != null ? $"{seller.FirstName} {seller.LastName}" : null,
+      Total = order.Total,
+      CreatedAt = orderEntity.AuditableDate,
+      OrderDetails = orderEntity.OrderDetails.Select(d => new OrderDetailResponseDto
+      {
+        Id = d.Id,
+        ProductId = d.ProductId,
+        Quantity = d.Quantity,
+        UnitPrice = d.UnitPrice,
+        Subtotal = d.Subtotal,
+        // Opcional: incluir nombre o imagen del producto si lo deseas aquí
+      }).ToList()
+    };
+  }
+  /// <summary>
+  /// Obtiene todas las órdenes de compra registradas en el sistema.
+  /// </summary>
+  /// <returns>Una lista de DTOs que representan todas las órdenes de compra, incluyendo detalles del comprador, vendedor y productos.</returns>
+  /// <exception cref="KeyNotFoundException">Si no se encontraron órdenes.</exception>
+  public async Task<(IEnumerable<OrderResponseDto> Orders, int TotalItems)> GetAllOrdersAsync(OrderQueryParams queryParams)
+  {
+    var query = _context.Orders
+      .Include(o => o.Buyer)
+      .Include(o => o.Seller)
+      .Include(o => o.OrderDetails)
+      .ThenInclude(od => od.Product)
+      .AsQueryable();
 
-	/// <summary>
-	/// Inicializa una nueva instancia de <see cref="OrderRepository"/>.
-	/// </summary>
-	/// <param name="context">El contexto de la base de datos.</param>
-	/// <param name="productRepository">Repositorio de productos.</param>
-	public OrderRepository(ApplicationDbContext context, IProductRepository productRepository)
-	{
-		_context = context;
-		_productRepository = productRepository;
-	}
+    // Aplicar filtros
+    if (queryParams.StartDate.HasValue)
+      query = query.Where(o => o.AuditableDate >= queryParams.StartDate.Value);
 
-	/// <summary>
-	/// Crea una nueva orden en la base de datos.
-	/// </summary>
-	/// <param name="orderDto">Datos de la orden a crear.</param>
-	/// <param name="userId">ID del usuario que crea la orden.</param>
-	/// <returns>La orden creada con su ID asignado.</returns>
-	public async Task<OrderDto> CreateAsync(OrderDto orderDto, string userId)
-	{
-		using var transaction = await _context.Database.BeginTransactionAsync();
+    if (queryParams.EndDate.HasValue)
+      query = query.Where(o => o.AuditableDate <= queryParams.EndDate.Value);
 
-		try
-		{
-			// Crear la entidad de orden
-			var orderEntity = new OrderEntity
-			{
-				OrderNote = orderDto.OrderNote,
-				OrderDate = DateTime.Now,
-				TotalAmount = orderDto.TotalAmount,
-				Status = orderDto.Status,
-				UserId = userId,
-				Details = new List<OrderDetailEntity>()
-			};
+    if (!string.IsNullOrWhiteSpace(queryParams.BuyerFullName))
+      query = query.Where(o => (o.Buyer!.FirstName + " " + o.Buyer.LastName).Contains(queryParams.BuyerFullName));
 
-			// Agregar detalles de la orden
-			foreach (var detail in orderDto.Details)
-			{
-				// Verificar si hay suficiente stock del producto
-				var product = await _context.Products.FindAsync(detail.ProductId);
-				if (product == null || product.Stock < detail.Quantity)
-				{
-					throw new InvalidOperationException($"Stock insuficiente para el producto con ID {detail.ProductId}");
-				}
+    if (!string.IsNullOrWhiteSpace(queryParams.SellerFullName))
+      query = query.Where(o => (o.Seller!.FirstName + " " + o.Seller.LastName).Contains(queryParams.SellerFullName));
 
-				// Reducir el stock del producto
-				product.Stock -= detail.Quantity;
+    var totalItems = await query.CountAsync();
 
-				// Agregar detalle a la orden
-				orderEntity.Details.Add(new OrderDetailEntity
-				{
-					ProductId = detail.ProductId,
-					Quantity = detail.Quantity,
-					UnitPrice = detail.UnitPrice
-				});
-			}
+    var orders = await query
+      .OrderByDescending(o => o.Id)
+      .Skip(queryParams.Skip)
+      .Take(queryParams.PageSize)
+      .ToListAsync();
 
-			// Guardar orden en la base de datos
-			_context.Orders.Add(orderEntity);
-			await _context.SaveChangesAsync();
+    var result = orders.Select(order => new OrderResponseDto
+    {
+      Id = order.Id,
+      BuyerId = order.BuyerId,
+      BuyerFullName = $"{order.Buyer?.FirstName} {order.Buyer?.LastName}",
+      SellerId = order.SellerId,
+      SellerFullName = $"{order.Seller?.FirstName} {order.Seller?.LastName}",
+      Total = order.Total,
+      CreatedAt = order.AuditableDate,
+      OrderDetails = order.OrderDetails.Select(detail => new OrderDetailResponseDto
+      {
+        Id = detail.Id,
+        ProductId = detail.ProductId,
+        Quantity = detail.Quantity,
+        UnitPrice = detail.UnitPrice,
+        Subtotal = detail.Subtotal,
+        ProductName = detail.Product!.Name
+      }).ToList()
+    });
 
-			// Confirmar transacción
-			await transaction.CommitAsync();
+    return (result, totalItems);
+  }
 
-			// Actualizar el DTO con el ID generado
-			orderDto.Id = orderEntity.Id;
+  /// <summary>
+  /// Obtiene todas las ordenes de un usuario en su rol de comprador.
+  /// </summary>
+  /// <param name="userId">El ID del usuario comprador.</param>
+  /// <returns>Una lista de DTOs que representan las ordenes del comprador.</returns>
+  /// <exception cref="KeyNotFoundException">Si no se encontraron ordenes.</exception>
 
-			return orderDto;
-		}
-		catch (Exception)
-		{
-			// Si algo falla, revertir la transacción
-			await transaction.RollbackAsync();
-			throw;
-		}
-	}
-
-	/// <summary>
-	/// Obtiene todas las órdenes de la base de datos.
-	/// </summary>
-	/// <returns>Lista de órdenes.</returns>
-	public async Task<IEnumerable<OrderDto>> GetAllAsync()
-	{
-		var orders = await _context.Orders
-			.Include(o => o.Details)
-			.ThenInclude(od => od.Product)
-			.OrderByDescending(o => o.OrderDate)
-			.ToListAsync();
-
-		return orders.Select(MapEntityToDto);
-	}
-
-	/// <summary>
-	/// Obtiene una orden por su ID.
-	/// </summary>
-	/// <param name="id">ID de la orden a buscar.</param>
-	/// <returns>La orden si existe, null en caso contrario.</returns>
-	public async Task<OrderDto?> GetAsync(int id)
-	{
-		var order = await _context.Orders
-			.Include(o => o.Details)
-			.ThenInclude(od => od.Product)
-			.FirstOrDefaultAsync(o => o.Id == id);
-
-		return order != null ? MapEntityToDto(order) : null;
-	}
-
-	/// <summary>
-	/// Obtiene todas las órdenes de un usuario específico.
-	/// </summary>
-	/// <param name="userId">ID del usuario.</param>
-	/// <returns>Lista de órdenes del usuario.</returns>
-	public async Task<IEnumerable<OrderDto>> GetByUserIdAsync(string userId)
-	{
-		var orders = await _context.Orders
-			.Include(o => o.Details)
-			.ThenInclude(od => od.Product)
-			.Where(o => o.UserId == userId)
-			.OrderByDescending(o => o.OrderDate)
-			.ToListAsync();
-
-		return orders.Select(MapEntityToDto);
-	}
-
-	/// <summary>
-	/// Convierte una entidad de orden a su DTO correspondiente.
-	/// </summary>
-	private OrderDto MapEntityToDto(OrderEntity entity)
-	{
-		return new OrderDto
-		{
-			Id = entity.Id,
-			OrderNote = entity.OrderNote,
-			OrderDate = entity.OrderDate,
-			TotalAmount = entity.TotalAmount,
-			Status = entity.Status,
-			UserId = entity.UserId,
-			Details = entity.Details.Select(od => new OrderDetailDto
-			{
-				Id = od.Id,
-				OrderId = od.OrderId,
-				ProductId = od.ProductId,
-				Quantity = od.Quantity,
-				UnitPrice = od.UnitPrice,
-				Product = od.Product != null ? new ProductDto
-				{
-					Id = od.Product.Id,
-					Name = od.Product.Name,
-					Description = od.Product.Description ?? string.Empty,
-					Price = od.Product.Price,
-					Stock = od.Product.Stock,
-					Image = od.Product.Image,
-					Active = od.Product.Active,
-					Type = od.Product.Type
-				} : null
-			}).ToList()
-		};
-	}
-	/// <summary>
-	/// Crea una orden para la venta de un producto específico
-	/// </summary>
-	public async Task<OrderDto> CreateSaleOrderAsync(int productId, uint quantity, string userId)
-	{
-		using var transaction = await _context.Database.BeginTransactionAsync();
-
-		try
-		{
-			// Obtener el producto
-			var product = await _context.Products.FindAsync(productId);
-			if (product == null)
-				throw new KeyNotFoundException($"No se encontró el producto con ID {productId}");
-
-			if (!product.Active)
-				throw new InvalidOperationException("No se puede vender un producto inactivo");
-
-			if (product.Stock < quantity)
-				throw new InvalidOperationException($"Stock insuficiente para {product.Name}. Disponible: {product.Stock}, Solicitado: {quantity}");
-
-			// Reducir el stock del producto
-			/*product.Stock -= quantity;*/
-
-			// Crear la entidad de orden
-			var orderEntity = new OrderEntity
-			{
-				OrderNote = $"Venta-{Guid.NewGuid()}",
-				OrderDate = DateTime.Now,
-				TotalAmount = product.Price * quantity,
-				Status = "Confirmado",
-				UserId = userId,
-				Details = new List<OrderDetailEntity>
-			{
-				new OrderDetailEntity
-				{
-					ProductId = productId,
-					Quantity = quantity,
-					UnitPrice = product.Price
-				}
-			}
-			};
-
-			// Guardar cambios
-			_context.Orders.Add(orderEntity);
-			await _context.SaveChangesAsync();
-
-			// Confirmar transacción
-			await transaction.CommitAsync();
-
-			// Mapear a DTO
-			return MapEntityToDto(orderEntity);
-		}
-		catch (Exception)
-		{
-			// Si algo falla, revertir la transacción
-			await transaction.RollbackAsync();
-			throw;
-		}
-	}
-	/// <summary>
-	/// Crea una orden específica para recargas de saldo
-	/// </summary>
-	public async Task<OrderDto> CreateTopUpOrderAsync(decimal amount, string userId, string description)
-	{
-		// Crear la entidad de orden para recarga
-		var orderEntity = new OrderEntity
-		{
-			OrderNote = "Recarga de Saldo desde: " + description,
-			OrderDate = DateTime.Now,
-			TotalAmount = amount,
-			Status = "Completado",
-			UserId = userId,
-			Details = new List<OrderDetailEntity>() // Sin detalles de productos
-		};
-
-		// Agregar la orden al contexto
-		_context.Orders.Add(orderEntity);
-		await _context.SaveChangesAsync();
-
-		// Mapear a DTO y devolver
-		return new OrderDto
-		{
-			Id = orderEntity.Id,
-			OrderNote = orderEntity.OrderNote,
-			OrderDate = orderEntity.OrderDate,
-			TotalAmount = orderEntity.TotalAmount,
-			Status = orderEntity.Status,
-			UserId = orderEntity.UserId,
-			Details = new List<OrderDetailDto>() // Sin detalles
-		};
-	}
+  public async Task<IEnumerable<OrderResponseDto>> GetOrdersByBuyerIdAsync(string userId)
+  {
+    var orders = await _context.Orders
+      .Where(o => o.BuyerId == userId)
+      .Include(o => o.Buyer)
+      .Include(o => o.Seller)
+      .Include(o => o.OrderDetails)
+      .ThenInclude(od => od.Product)
+      .OrderByDescending(o => o.Id)
+      .ToListAsync();
+    if (orders == null)
+    {
+      throw new KeyNotFoundException("No se encontraron ordenes.");
+    }
+    return orders.Select(order => new OrderResponseDto
+    {
+      Id = order.Id,
+      BuyerId = order.BuyerId,
+      BuyerFullName = $"{order.Buyer?.FirstName} {order.Buyer?.LastName}",
+      SellerId = order.SellerId,
+      SellerFullName = $"{order.Seller?.FirstName} {order.Seller?.LastName}",
+      Total = order.Total,
+      CreatedAt = order.AuditableDate,
+      OrderDetails = order.OrderDetails.Select(detail => new OrderDetailResponseDto
+      {
+        Id = detail.Id,
+        ProductId = detail.ProductId,
+        Quantity = detail.Quantity,
+        UnitPrice = detail.UnitPrice,
+        Subtotal = detail.Subtotal,
+      }).ToList()
+    });
+  }
+  /// <summary>
+  ///   Obtiene todas las ordenes de un usuario en su rol de vendedor.
+  /// </summary>
+  /// <param name="userId">El ID del usuario vendedor.</param>
+  /// <returns>Una lista de DTOs que representan las ordenes del vendedor.</returns>
+  /// <exception cref="KeyNotFoundException">Si no se encontraron ordenes.</exception>
+  public async Task<IEnumerable<OrderResponseDto>> GetOrdersBySellerIdAsync(string userId)
+  {
+    var orders = await _context.Orders
+      .Where(o => o.SellerId == userId)
+      .Include(o => o.Buyer)
+      .Include(o => o.Seller)
+      .Include(o => o.OrderDetails)
+      .ThenInclude(od => od.Product)
+      .OrderByDescending(o => o.Id)
+      .ToListAsync();
+    if (orders == null)
+    {
+      throw new KeyNotFoundException("No se encontraron ordenes.");
+    }
+    return orders.Select(order => new OrderResponseDto
+    {
+      Id = order.Id,
+      BuyerId = order.BuyerId,
+      BuyerFullName = $"{order.Buyer?.FirstName} {order.Buyer?.LastName}",
+      SellerId = order.SellerId,
+      SellerFullName = $"{order.Seller?.FirstName} {order.Seller?.LastName}",
+      Total = order.Total,
+      CreatedAt = order.AuditableDate,
+      OrderDetails = order.OrderDetails.Select(detail => new OrderDetailResponseDto
+      {
+        Id = detail.Id,
+        ProductId = detail.ProductId,
+        Quantity = detail.Quantity,
+        UnitPrice = detail.UnitPrice,
+        Subtotal = detail.Subtotal,
+      }).ToList()
+    });
+  }
 }

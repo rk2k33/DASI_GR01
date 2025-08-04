@@ -20,6 +20,15 @@ public class ProductRepository : IProductRepository
     _imgurService = imgurService;
   }
 
+  /// <summary>
+  ///   Crea un nuevo producto en la base de datos.
+  /// </summary>
+  /// <param name="productDto">Objeto con los datos del producto a crear.</param>
+  /// <param name="userId">El Id del usuario que hace la petición.</param>
+  /// <returns>
+  ///   Retorna el objeto <see cref="ProductDto"/> creado si se encontró el producto.
+  ///   Retorna <see langword="null"/> si no se encontró el producto.
+  /// </returns>
   public async Task<ProductDto> CreateAsync(ProductDto productDto, string userId)
   {
     string? imgurLink = null;
@@ -51,7 +60,7 @@ public class ProductRepository : IProductRepository
       Description = productDto.Description,
       Price = productDto.Price,
       Stock = productDto.Stock,
-      Image = imgurLink ?? string.Empty, // o null si tu columna lo permite
+      Image = imgurLink ?? "Imagen no disponible",
       Active = productDto.Active,
       Type = productDto.Type,
       ImageDeleteHash = deleteHash ?? string.Empty
@@ -84,7 +93,7 @@ public class ProductRepository : IProductRepository
   ///   Obtiene todos los productos de la base de datos.
   /// </summary>
   /// <returns>
-  ///   Retorna un <see cref="IList{ProductDto}"/> con todos los productos de la base de datos.
+  ///   Retorna una lista de objetos <see cref="ProductDto"/> que contienen los datos de los productos.
   /// </returns>
   public async Task<IEnumerable<ProductDto>> GetAllAsync()
   {
@@ -99,7 +108,9 @@ public class ProductRepository : IProductRepository
         Image = p.Image,
         Active = p.Active,
         Type = p.Type
-      }).ToListAsync();
+      })
+      .OrderByDescending(p => p.Id)
+      .ToListAsync();
   }
 
   /// <summary>
@@ -123,7 +134,9 @@ public class ProductRepository : IProductRepository
         Image = p.Image,
         Active = p.Active,
         Type = p.Type
-      }).ToListAsync();
+      })
+      .OrderByDescending(p => p.Id)
+      .ToListAsync();
   }
 
   /// <summary>
@@ -183,8 +196,8 @@ public class ProductRepository : IProductRepository
 
         // Subir nueva imagen
         var uploadResult = await _imgurService.UploadImageAsync(productDto.Image, productDto.Name);
-        entity.Image = uploadResult.Link;
-        entity.ImageDeleteHash = uploadResult.DeleteHash;
+        entity.Image = uploadResult.Link ?? "Imagen no disponible";
+        entity.ImageDeleteHash = uploadResult.DeleteHash ?? "No disponible";
       }
       catch (Exception ex)
       {
@@ -225,10 +238,10 @@ public class ProductRepository : IProductRepository
     {
       Id = entity.Id,
       Name = entity.Name,
-      Description = entity.Description ?? string.Empty,
+      Description = entity.Description ?? "Ninguna descripción disponible",
       Price = entity.Price,
       Stock = entity.Stock,
-      Image = entity.Image,
+      Image = entity.Image ?? "Imagen no disponible",
       Active = entity.Active,
       Type = entity.Type
     };
@@ -236,100 +249,77 @@ public class ProductRepository : IProductRepository
     return updatedProductDto;
   }
 
-	/// <summary>
-	///   Registra una venta de producto y reduce su stock disponible.
-	/// </summary>
-	/// <param name="sellProductDto">
-	///   Objeto DTO con la información de la venta, incluyendo el ID del producto y la cantidad.
-	/// </param>
-	/// <param name="userId">
-	///   El identificador del usuario que realiza la venta.
-	/// </param>
-	/// <returns>
-	///   Retorna el <see cref="ProductDto"/> actualizado con el nuevo stock si la venta fue exitosa.
-	///   Retorna <see langword="null"/> si no se encontró el producto, si no está activo, o si no hay stock suficiente.
-	/// </returns>
-	/// <remarks>
-	///   Este método gestiona todo el proceso de venta en una única transacción, garantizando
-	///   la consistencia entre la actualización del stock y el registro del log de operación.
-	///   Si ocurre algún error durante el proceso, la transacción se revierte completamente.
-	/// </remarks>
-	public async Task<ProductDto?> RegisterSellProductAsync(SellProductDto sellProductDto, string userId)
-	{
-		// La validación básica ya está en el DTO con las anotaciones
-		using var transaction = await _context.Database.BeginTransactionAsync();
+  /// <summary>
+  ///   Registra una venta de producto y reduce su stock disponible.
+  /// </summary>
+  /// <param name="sellProductDto">
+  ///   Objeto DTO con la información de la venta, incluyendo el ID del producto y la cantidad.
+  /// </param>
+  /// <param name="userId">
+  ///   El identificador del usuario que realiza la venta.
+  /// </param>
+  /// <returns>
+  ///   Retorna el <see cref="ProductDto"/> actualizado con el nuevo stock si la venta fue exitosa.
+  ///   Retorna <see langword="null"/> si no se encontró el producto, si no está activo, o si no hay stock suficiente.
+  /// </returns>
+  /// <remarks>
+  ///   Este método gestiona todo el proceso de venta en una única transacción, garantizando
+  ///   la consistencia entre la actualización del stock y el registro del log de operación.
+  ///   Si ocurre algún error durante el proceso, la transacción se revierte completamente.
+  /// </remarks>
+  public async Task<bool> RegisterSellProductAsync(OrderCreateDto order, string sellerId)
+  {
+    using var transaction = await _context.Database.BeginTransactionAsync();
 
-		try
-		{
-			var entity = await _context.Products.FindAsync(sellProductDto.ProductId);
+    foreach (var detail in order.OrderDetails)
+    {
+      var product = await _context.Products.FirstOrDefaultAsync(p => p.Id == detail.ProductId && p.Active);
+      if (product == null)
+      {
+        await transaction.RollbackAsync();
+        throw new InvalidOperationException("Producto no encontrado o no activo."); // producto no existe o no está activo
+      }
 
-			// Verificamos si el producto existe y está activo
-			if (entity == null || !entity.Active)
-			{
-				throw new KeyNotFoundException("No se encontró este producto.");
-			}
+      if (product.Stock < detail.Quantity)
+      {
+        await transaction.RollbackAsync();
+        throw new InvalidOperationException("Stock insuficiente."); // stock insuficiente
+      }
 
-			// Verificamos si hay stock suficiente
-			if (entity.Stock < sellProductDto.Quantity)
-			{
-				throw new BadHttpRequestException("No hay stock suficiente.");
-			}
+      uint stockBefore = product.Stock;
+      product.Stock -= detail.Quantity;
 
-			// Guardamos el stock antes de la actualización
-			uint stockBefore = entity.Stock;
+      _context.Products.Update(product);
 
-			// Actualizamos el stock
-			entity.Stock -= sellProductDto.Quantity;
+      var log = new ProductLoggerDto
+      {
+        ProductId = product.Id,
+        UserId = sellerId,
+        Action = "Venta de producto",
+        Description = $"Venta de {detail.Quantity} unidades",
+        QuantityBefore = stockBefore,
+        QuantityAfter = product.Stock
+      };
 
-			// Creamos el registro de la operación
-			var logEntry = new ProductLoggerEntity
-			{
-				Action = "Venta de Producto",
-				Description = $"Venta de {sellProductDto.Quantity} unidades del producto '{entity.Name}'",
-				QuantityBefore = stockBefore,
-				QuantityAfter = entity.Stock,
-				ProductFk = entity.Id,
-				UserFk = userId,
-			};
+      await _logger.CreateAsync(log);
+    }
 
-			// Añadir el log al contexto
-			_context.ProductLogs.Add(logEntry);
+    await _context.SaveChangesAsync();
+    await transaction.CommitAsync();
 
-			// Guardar tanto la actualización de stock como el log
-			await _context.SaveChangesAsync();
+    return true;
 
-			// Confirmar la transacción
-			await transaction.CommitAsync();
+  }
 
-			// Retornamos el producto actualizado
-			return new ProductDto
-			{
-				Id = entity.Id,
-				Name = entity.Name,
-				Description = entity.Description ?? string.Empty,
-				Price = entity.Price,
-				Stock = entity.Stock,
-				Image = entity.Image,
-				Active = entity.Active,
-				Type = entity.Type
-			};
-		}
-		catch (Exception)
-		{
-			// Si algo falla, revertir la transacción
-			await transaction.RollbackAsync();
-			throw;
-		}
-	}
-	/// <summary>
-	///   Elimina un producto existente en la base de datos, solo lo desactiva.
-	/// </summary>
-	/// <param name="id">El identificador del producto a eliminar.</param>
-	/// <returns>
-	///   Retorna <see langword="true"/> si se encontró el producto y se eliminó correctamente.
-	///   Retorna <see langword="false"/> si no se encontró el producto.
-	/// </returns>
-	public async Task<bool> DeleteAsync(int id, string userId)
+  /// <summary>
+  ///   Elimina un producto existente en la base de datos, solo lo desactiva.
+  /// </summary>
+  /// <param name="id">El identificador del producto a eliminar.</param>
+  /// <returns>
+  ///   Retorna <see langword="true"/> si se encontró el producto y se eliminó correctamente.
+  ///   Retorna <see langword="false"/> si no se encontró el producto.
+  /// </returns>
+  public async Task<bool> DeleteAsync(int id, string userId)
   {
     var entity = await _context.Products.FindAsync(id);
     if (entity == null)

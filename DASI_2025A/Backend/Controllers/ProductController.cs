@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using Shared;
 using System.Security.Claims;
 
@@ -8,44 +9,44 @@ namespace Backend
   [Route("api/v1/[controller]")]
   [ApiController]
   public class ProductController : ControllerBase
+  {
+    private readonly IProductService _productService;
+    private readonly ILogger<ProductController> _logger;
+
+    /// <summary>
+    /// Inicializa una nueva instancia de la clase <see cref="ProductController"/>.
+    /// </summary>
+    /// <param name="productService">Una instancia de <see cref="IProductService"/> para realizar operaciones de productos.</param>
+    /// <param name="logger">Instancia de <see cref="ILogger"/> para registrar información.</param>
+    public ProductController(IProductService productService, ILogger<ProductController> logger)
     {
-        private readonly IProductService _productService;
-		private readonly IWalletRepository _walletRepository;
+      _productService = productService;
+      _logger = logger;
+    }
 
-		//// <summary>
-		/// Inicializa una nueva instancia de la clase <see cref="ProductController"/>.
-		/// </summary>
-		/// <param name="productService">Una instancia de <see cref="IProductService"/> para realizar operaciones de productos.</param>
-		public ProductController(IProductService productService, IWalletRepository walletRepository)
-		{
-			_productService = productService;
-			_walletRepository = walletRepository;
-		}
-
-		/// <summary>
-		///     Crea un nuevo producto.
-		/// </summary>
-		/// <param name="productDto">Los datos del producto a crear.</param>
-		/// <returns>
-		///     Retorna un <see cref="IActionResult"/> con un código de estado <see cref="StatusCodes.Status201Created"/> si el producto se crea correctamente.
-		///     En caso de error, retorna un <see cref="IActionResult"/> con un código de estado <see cref="StatusCodes.Status400BadRequest"/>.
-		/// </returns>
-		[HttpPost]
+    /// <summary>
+    ///     Crea un nuevo producto.
+    /// </summary>
+    [HttpPost]
     [Authorize(Policy = "AdminPlus")]
     public async Task<IActionResult> CreateProduct([FromBody] ProductDto productDto)
     {
       try
       {
         var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        _logger.LogInformation("Usuario {UserId} intenta crear un nuevo producto: {@ProductDto}", userId, productDto);
         var response = await _productService.CreateProductAsync(productDto, userId!);
+        _logger.LogInformation("Producto creado exitosamente por el usuario {UserId}.", userId);
         return Created(string.Empty, response);
       }
       catch (BadHttpRequestException ex)
       {
+        _logger.LogWarning("Error de solicitud al crear producto: {Message}", ex.Message);
         return BadRequest(new { message = ex.Message });
       }
-      catch (Exception)
+      catch (Exception ex)
       {
+        _logger.LogError(ex, "Error inesperado al crear el producto.");
         return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error del servidor al crear el producto." });
       }
     }
@@ -53,26 +54,24 @@ namespace Backend
     /// <summary>
     ///     Obtiene todos los productos.
     /// </summary>
-    /// <returns>
-    ///     Retorna un <see cref="IActionResult"/> con un código de estado <see cref="StatusCodes.Status200OK"/> si los productos se obtienen correctamente.
-    ///     En caso de error, retorna un <see cref="IActionResult"/> con un código de estado <see cref="StatusCodes.Status404NotFound"/> si no se encuentran los productos.
-    ///     Si ocurre un error inesperado, retorna un <see cref="IActionResult"/> con un código de estado <see cref="StatusCodes.Status400BadRequest"/>.
-    /// </returns>
     [HttpGet]
     [Authorize]
     public async Task<IActionResult> GetAllProducts()
     {
       try
       {
+        _logger.LogInformation("Solicitud para obtener todos los productos.");
         var response = await _productService.GetAllProductsAsync();
         return Ok(response);
       }
       catch (KeyNotFoundException ex)
       {
+        _logger.LogWarning("No se encontraron productos: {Message}", ex.Message);
         return NotFound(new { message = ex.Message });
       }
-      catch (Exception)
+      catch (Exception ex)
       {
+        _logger.LogError(ex, "Error inesperado al obtener los productos.");
         return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error del servidor al obtener los productos." });
       }
     }
@@ -80,27 +79,24 @@ namespace Backend
     /// <summary>
     ///     Obtiene productos por tipo.
     /// </summary>
-    /// <param name="type">El tipo de producto.</param>
-    /// <returns>
-    ///     Retorna un <see cref="IActionResult"/> con código de estado <see cref="StatusCodes.Status200OK"/> si los productos se obtienen exitosamente.
-    ///     En caso de error, retorna un <see cref="IActionResult"/> con código <see cref="StatusCodes.Status404NotFound"/> si no se encuentran productos.
-    ///     Si ocurre un error inesperado, retorna un <see cref="IActionResult"/> con código <see cref="StatusCodes.Status400BadRequest"/>.
-    /// </returns>
     [HttpGet("tipo/{type}")]
     [Authorize]
     public async Task<IActionResult> GetProductsByType([FromRoute] ProductType type)
     {
       try
       {
+        _logger.LogInformation("Solicitud para obtener productos del tipo: {Type}", type);
         var response = await _productService.GetProductsByTypeAsync(type);
         return Ok(response);
       }
       catch (KeyNotFoundException ex)
       {
+        _logger.LogWarning("No se encontraron productos del tipo {Type}: {Message}", type, ex.Message);
         return NotFound(new { message = ex.Message });
       }
-      catch (Exception)
+      catch (Exception ex)
       {
+        _logger.LogError(ex, "Error inesperado al obtener productos por tipo.");
         return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error del servidor al obtener los productos." });
       }
     }
@@ -108,27 +104,25 @@ namespace Backend
     /// <summary>
     ///     Obtiene un producto por su ID.
     /// </summary>
-    /// <param name="id">El identificador del producto.</param>
-    /// <returns>
-    ///     Retorna un <see cref="IActionResult"/> con código 200 OK si el producto se obtiene correctamente.
-    ///     Retorna un <see cref="IActionResult"/> con código 404 Not Found si el producto no existe.
-    ///     Retorna un <see cref="IActionResult"/> con código 400 Bad Request si ocurre un error inesperado.
-    /// </returns>
     [HttpGet("{id:int:min(1)}")]
     [Authorize]
     public async Task<IActionResult> GetProductById([FromRoute] int id)
     {
       try
       {
+        _logger.LogInformation("Solicitud para obtener producto con ID: {Id}", id);
         var response = await _productService.GetProductByIdAsync(id);
+        _logger.LogInformation("Producto con ID {Id} obtenido exitosamente.", id);
         return Ok(response);
       }
       catch (KeyNotFoundException ex)
       {
+        _logger.LogWarning("No se encontró el producto con ID {Id}: {Message}", id, ex.Message);
         return NotFound(new { message = ex.Message });
       }
-      catch (Exception)
+      catch (Exception ex)
       {
+        _logger.LogError(ex, "Error inesperado al obtener el producto por ID.");
         return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error del servidor al obtener el producto." });
       }
     }
@@ -136,12 +130,6 @@ namespace Backend
     /// <summary>
     ///     Actualiza un producto.
     /// </summary>
-    /// <param name="productDto">Los datos del producto a actualizar.</param>
-    /// <returns>
-    ///     Retorna un <see cref="IActionResult"/> con código 200 OK si el producto se actualiza correctamente.
-    ///     Retorna un <see cref="IActionResult"/> con código 400 Bad Request si la solicitud es inválida.
-    ///     Retorna un <see cref="IActionResult"/> con código 400 Bad Request si ocurre un error inesperado.
-    /// </returns>
     [HttpPut]
     [Authorize(Policy = "AdminPlus")]
     public async Task<IActionResult> UpdateProduct([FromBody] UpdateProductDto productDto)
@@ -149,94 +137,51 @@ namespace Backend
       try
       {
         var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        _logger.LogInformation("Usuario {UserId} intenta actualizar el producto: {@ProductDto}", userId, productDto);
         var response = await _productService.UpdateProductAsync(productDto, userId!);
+        _logger.LogInformation("Producto actualizado exitosamente por el usuario {UserId}.", userId);
         return Ok(response);
       }
       catch (BadHttpRequestException ex)
       {
+        _logger.LogWarning("Error de solicitud al actualizar producto: {Message}", ex.Message);
         return BadRequest(new { message = ex.Message });
       }
       catch (KeyNotFoundException ex)
       {
+        _logger.LogWarning("No se encontró el producto para actualizar: {Message}", ex.Message);
         return NotFound(new { message = ex.Message });
       }
-      catch (Exception)
+      catch (Exception ex)
       {
+        _logger.LogError(ex, "Error inesperado al actualizar el producto.");
         return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error del servidor al actualizar el producto." });
       }
     }
 
-		/// <summary>
-		/// Vende un producto, generando automáticamente una orden y actualizando el saldo
-		/// </summary>
-		/// <param name="sellProductDto">Datos de la venta a realizar</param>
-		/// <returns>Resultado completo de la operación de venta</returns>
-		[HttpPost("sell")]
-		[Authorize(Policy = "AdminPlus")]
-		public async Task<IActionResult> SellProductAsync([FromBody] SellProductDto sellProductDto)
-		{
-			try
-			{
-				var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-				if (string.IsNullOrEmpty(userId))
-				{
-					return Unauthorized(new { message = "Usuario no autenticado" });
-				}
-
-				// Realizar la venta
-				var response = await _productService.SellProductAsync(sellProductDto, userId);
-
-				// Obtener el saldo actualizado del usuario
-				var updatedBalance = await _walletRepository.GetUserBalanceAsync(userId);
-
-				return Ok(response);
-			}
-			catch (UnauthorizedAccessException ex)
-			{
-				return Unauthorized(new { message = ex.Message });
-			}
-			catch (KeyNotFoundException ex)
-			{
-				return NotFound(new { message = ex.Message });
-			}
-			catch (InvalidOperationException ex)
-			{
-				return BadRequest(new { message = ex.Message });
-			}
-			catch (Exception ex)
-			{
-				return StatusCode(StatusCodes.Status500InternalServerError,
-					new { message = $"Error del servidor al vender el producto: {ex.Message}" });
-			}
-		}
-
-
-		/// <summary>
-		///     Elimina un producto.
-		/// </summary>
-		/// <param name="id">El identificador del producto a eliminar.</param>
-		/// <returns>
-		///     Retorna un <see cref="IActionResult"/> con código 200 (OK) si el producto se eliminó correctamente.
-		///     Retorna un <see cref="IActionResult"/> con código 400 (Bad Request) si la solicitud es inválida.
-		///     Retorna un <see cref="IActionResult"/> con código 404 (Not Found) si el producto no existe.
-		///     Retorna un <see cref="IActionResult"/> con código 500 (Internal Server Error) para errores inesperados.
-		/// </returns>
-		[HttpDelete("{id:int:min(1)}")]
+    /// <summary>
+    ///     Elimina un producto.
+    /// </summary>
+    [HttpDelete("{id:int:min(1)}")]
     [Authorize(Policy = "AdminPlus")]
     public async Task<IActionResult> DeleteProduct([FromRoute] int id)
     {
       try
       {
         var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        _logger.LogInformation("Usuario {UserId} intenta eliminar el producto con ID: {Id}", userId, id);
         var response = await _productService.DeleteProductAsync(id, userId!);
+        _logger.LogInformation("Producto con ID {Id} eliminado exitosamente por el usuario {UserId}.", id, userId);
         return Ok(response);
       }
       catch (BadHttpRequestException ex)
       {
+        _logger.LogWarning("Error de solicitud al eliminar producto: {Message}", ex.Message);
         return BadRequest(new { message = ex.Message });
       }
-      catch (Exception)
+      catch (Exception ex)
       {
+        _logger.LogError(ex, "Error inesperado al eliminar el producto.");
         return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error del servidor al eliminar el producto." });
       }
     }

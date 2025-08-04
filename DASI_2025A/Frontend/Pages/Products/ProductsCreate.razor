@@ -1,3 +1,4 @@
+@attribute [Authorize(Roles = "Superadmin, Admin")]
 @page "/Productos/Crear"
 @inject IProductService _productService
 @inject NavigationManager NavigationManager
@@ -6,25 +7,14 @@
 <PageTitle>Crear Producto</PageTitle>
 
 <div class="space-y-4 w-full">
-  <section class="flex flex-col w-full justify-center items-start">
-    <div class="p-2 flex gap-4 justify-center items-center">
-      <img src="/Assets/Images/mapache.webp" alt="mapache scout SSCC" class="w-auto h-[120px]">
-      <div class="text-center">
-        <div class="flex flex-col">
-          <span class="text-sm font-bold text-[#2b4266]">SS.CC.</span>
-          <span class="text-2xl font-bold text-[#1C328C]">Rumipamba</span>
-        </div>
-        <span class="text-gray-400/90 text-sm font-bold">Crear Productos y Lunches</span>
-      </div>
-    </div>
-  </section>
+  <BodyHeader title="Crear Productos y Lunches" />
 
   <section class="w-full flex justify-between items-center px-4">
     <h1 class="text-4xl font-bold text-[#427500]">Crear Productos</h1>
     <div class="flex gap-4">
       <NavLink href="/Productos"
         class="rounded-lg text-white text-sm text-center font-bold bg-violet-600 hover:bg-violet-400 transition duration-300 px-3 py-2 flex justify-center items-center gap-2">
-        <i class="fa-solid fa-arrow-left"></i>Atrás
+        <i class="fa-solid fa-arrow-left"></i><span class="hidden md:inline">Atrás</span>
       </NavLink>
     </div>
   </section>
@@ -32,7 +22,7 @@
   <section class="w-full flex justify-center items-center">
     <EditForm Model="productDto" OnValidSubmit="handleSubmit"
       class="p-10 w-full rounded-2xl border border-gray-300/50 shadow-2xl">
-      <div class="grid grid-cols-3 grid-rows-4 gap-4 space-y-4">
+      <div class="grid grid-cols-1 md:grid-cols-3 md:grid-rows-4 gap-4 space-y-4">
         <DataAnnotationsValidator />
         <div>
           <div>
@@ -54,7 +44,7 @@
           </div>
 
         </div>
-        <div class="col-start-1 row-start-2">
+        <div class="md:col-start-1 md:row-start-2">
           <div>
             <FloatingLabelInput Label="Precio" Name="Price" Type="number" LabelColor="blue"
               Value="@productDto.Price.ToString()" step="any"
@@ -63,7 +53,7 @@
             <ValidationMessage For="@(() => productDto.Price)" />
           </div>
         </div>
-        <div class="col-start-2 row-start-2">
+        <div class="md:col-start-2 md:row-start-2">
           <div>
             <FloatingLabelInput Label="Stock" Name="Stock" Type="number" LabelColor="blue"
               Value="@productDto.Stock.ToString()"
@@ -72,7 +62,7 @@
             <ValidationMessage For="@(() => productDto.Stock)" />
           </div>
         </div>
-        <div class="col-span-2 row-span-2 col-start-1 row-start-3">
+        <div class="md:col-span-2 md:row-span-2 md:col-start-1 md:row-start-3">
           <div>
             <FloatingLabelTextArea Label="Descripción" Name="Description" LabelColor="blue"
               Value="@productDto.Description"
@@ -81,8 +71,10 @@
             <ValidationMessage For="@(() => productDto.Description)" />
           </div>
         </div>
-        <div class="row-span-3 col-start-3 row-start-1 flex flex-col justify-center items-center">
-          <div class="flex-3 flex justify-center items-center">
+        <div class="md:row-span-3 md:col-start-3 md:row-start-1 flex flex-col justify-center items-center">
+          <div class="font-bold text-2xl md:hidden">Imagen</div>
+          <div
+            class="flex-3 flex h-[200px] w-[200px] justify-center px-2 py-20 mb-2 items-center rounded-lg border-2 border-gray-800/50 border-dashed">
             <!-- Aqui va  la preview de  la imagen -->
             @if (!string.IsNullOrEmpty(previewUrl))
             {
@@ -97,7 +89,7 @@
             <InputFile id="fileInput" OnChange="HandleFileSelected" class="hidden" />
           </div>
         </div>
-        <div class="col-start-3 row-start-4 flex justify-center items-start">
+        <div class="md:col-start-3 md:row-start-4 flex justify-center items-center md:items-start">
           <button type="submit"
             class="bg-green-700 hover:bg-green-500 text-white font-bold py-3 px-2 rounded-xl border border-white/30 transition duration-200 cursor-pointer">
             Crear Producto</button>
@@ -115,9 +107,7 @@
 
   private async Task handleSubmit()
   {
-    Console.WriteLine(productDto.ToString());
     var result = await _productService.CreateProductAsync(productDto);
-    //Console.WriteLine(result.data);
     serverMessage = result.message;
 
     if (result.data is null)
@@ -139,7 +129,6 @@
       {
         if (!file.ContentType.Contains("image/jpeg") &&
         !file.ContentType.Contains("image/jpg") &&
-        !file.ContentType.Contains("image/gif") &&
         !file.ContentType.Contains("image/png") &&
         !file.ContentType.Contains("image/apng") &&
         !file.ContentType.Contains("image/tiff"))
@@ -161,7 +150,6 @@
     {
       if (ex.Message.Contains("exceeds the maximum"))
       {
-        Console.WriteLine(ex.Message);
         await _sw.FireAsync("Error", "El archivo es demasiado grande, máximo permitido 5mb", SweetAlertIcon.Error);
       }
       else
@@ -170,6 +158,4 @@
       }
     }
   }
-
-
 }

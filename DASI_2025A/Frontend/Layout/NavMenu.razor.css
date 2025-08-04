@@ -1,4 +1,3 @@
-/* NavMenu.razor.css */
 .container-fluid {
     display: flex;
     justify-content: space-between;
@@ -25,13 +24,8 @@
 }
 
 /* Media query para pantallas grandes */
-@media (min-width: 641px) {
-    button[title="Navigation menu"] {
-        display: none;
-    }
-
+@media (min-width: 1024px) {
     .hidden {
-        /* Nunca colapsar la barra lateral en pantallas anchas */
         display: block;
     }
 
